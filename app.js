@@ -143,10 +143,11 @@ const ensureAdminAccess = async () => {
     adminAllowed = false;
     return false;
   }
+  const email = (authUser.email || '').toLowerCase();
   const { data, error } = await supabase
     .from('admin_emails')
     .select('email')
-    .eq('email', authUser.email)
+    .eq('email', email)
     .maybeSingle();
   adminAllowed = !!data && !error;
   return adminAllowed;
@@ -175,8 +176,7 @@ const renderHome = async () => {
     const authMessage = document.getElementById('auth-message');
     const signOutButton = document.getElementById('sign-out');
     if (authUser && !adminAllowed) {
-      authMessage.textContent =
-        'You are signed in but not on the admin allowlist. Ask an admin to grant access.';
+      authMessage.textContent = `Signed in as ${authUser.email}. You are not on the admin allowlist.`;
       if (signOutButton) {
         signOutButton.classList.remove('hidden');
         signOutButton.addEventListener('click', async () => {
