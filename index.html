@@ -167,9 +167,11 @@ to archive results when the poll is finished.
             name="email"
             class="rounded-xl border border-white/10 bg-slate-900/60 px-4 py-3 text-sm text-white"
             placeholder="you@company.com"
+            autocomplete="email"
             required
           />
           <button
+            id="auth-submit"
             type="submit"
             class="rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-cyan-400"
           >
@@ -201,7 +203,7 @@ to archive results when the poll is finished.
 
         <div class="grid gap-3 rounded-2xl border border-white/10 bg-slate-900/60 p-4">
           <p class="text-xs uppercase tracking-widest text-slate-400">Live template preview</p>
-          <p id="template-preview" class="text-base text-cyan-100"></p>
+          <p id="template-preview" class="text-base text-cyan-100" aria-live="polite"></p>
         </div>
 
         <div class="grid gap-3 rounded-2xl border border-white/10 bg-slate-900/60 p-4">
@@ -215,7 +217,7 @@ to archive results when the poll is finished.
               View results
             </button>
           </div>
-          <div id="public-results" class="hidden text-xs text-slate-300"></div>
+          <div id="public-results" class="hidden text-xs text-slate-300" aria-live="polite"></div>
         </div>
 
         <button

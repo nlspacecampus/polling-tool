@@ -1,3 +1,7 @@
+// -----------------------------------------------------------------------------
+// Configuration
+// -----------------------------------------------------------------------------
+// Supabase anon (publishable) key is safe to ship in client code.
 const SUPABASE_URL = 'https://iofsxaqpwwpktkqncenh.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_O7DrxdXr7P7oE75LLbeXlA_8oOPr_RF';
 
@@ -5,7 +9,11 @@ const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
     : null;
+const SUPABASE_ENABLED = !!supabase;
 
+// -----------------------------------------------------------------------------
+// Local-only fallback storage (used when Supabase is not configured)
+// -----------------------------------------------------------------------------
 const STORAGE_KEYS = {
   polls: 'polling-tool.polls',
   archive: 'polling-tool.archive',
@@ -28,6 +36,9 @@ const getRedirectUrl = () => {
   return url.toString();
 };
 
+// -----------------------------------------------------------------------------
+// Utilities
+// -----------------------------------------------------------------------------
 const getStored = (key, fallback) => {
   const raw = localStorage.getItem(key);
   if (!raw) return fallback;
@@ -47,13 +58,31 @@ const generateId = () =>
 
 const formatDate = (iso) => new Date(iso).toLocaleString();
 
+const setButtonLoading = (button, label, isLoading) => {
+  if (!button) return;
+  button.disabled = isLoading;
+  button.textContent = isLoading ? label.loading : label.idle;
+};
+
+const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const fetchPolls = () => getStored(STORAGE_KEYS.polls, []);
 const savePolls = (polls) => setStored(STORAGE_KEYS.polls, polls);
 const fetchArchive = () => getStored(STORAGE_KEYS.archive, []);
 const saveArchive = (archive) => setStored(STORAGE_KEYS.archive, archive);
 
+// -----------------------------------------------------------------------------
+// Data access
+// -----------------------------------------------------------------------------
 const listPolls = async (status = 'active') => {
-  if (!supabase) return status === 'active' ? fetchPolls() : fetchArchive();
+  if (!SUPABASE_ENABLED) return status === 'active' ? fetchPolls() : fetchArchive();
   if (status === 'final' && !isAdmin()) return [];
   const { data, error } = await supabase
     .from('polls')
@@ -68,7 +97,7 @@ const listPolls = async (status = 'active') => {
 };
 
 const getPollById = async (pollId) => {
-  if (!supabase) return fetchPolls().find((entry) => entry.id === pollId) || null;
+  if (!SUPABASE_ENABLED) return fetchPolls().find((entry) => entry.id === pollId) || null;
   const { data, error } = await supabase.from('polls').select('*').eq('id', pollId).maybeSingle();
   if (error) {
     console.warn('Failed to load poll', error.message);
@@ -78,7 +107,7 @@ const getPollById = async (pollId) => {
 };
 
 const upsertPoll = async (poll) => {
-  if (!supabase) {
+  if (!SUPABASE_ENABLED) {
     const polls = fetchPolls();
     const index = polls.findIndex((entry) => entry.id === poll.id);
     if (index === -1) polls.push(poll);
@@ -93,7 +122,7 @@ const upsertPoll = async (poll) => {
 };
 
 const listVotes = async (pollId) => {
-  if (!supabase) {
+  if (!SUPABASE_ENABLED) {
     const poll = fetchPolls().find((entry) => entry.id === pollId);
     return poll ? poll.votes || [] : [];
   }
@@ -107,7 +136,7 @@ const listVotes = async (pollId) => {
 };
 
 const createVote = async (pollId, answers) => {
-  if (!supabase) {
+  if (!SUPABASE_ENABLED) {
     const polls = fetchPolls();
     const poll = polls.find((entry) => entry.id === pollId);
     if (!poll) return;
@@ -125,7 +154,12 @@ const createVote = async (pollId, answers) => {
 };
 
 const fetchPollResults = async (pollId) => {
-  if (!supabase) return null;
+  if (!SUPABASE_ENABLED) {
+    const poll = fetchPolls().find((entry) => entry.id === pollId);
+    if (!poll) return null;
+    const votes = poll.votes || [];
+    return buildAggregateFromVotes(poll, votes);
+  }
   const { data, error } = await supabase
     .from('polls')
     .select('results')
@@ -139,7 +173,7 @@ const fetchPollResults = async (pollId) => {
 };
 
 const ensureAdminAccess = async () => {
-  if (!supabase || !authUser) {
+  if (!SUPABASE_ENABLED || !authUser) {
     adminAllowed = false;
     return false;
   }
@@ -154,7 +188,7 @@ const ensureAdminAccess = async () => {
 };
 
 const clearVotes = async (pollId) => {
-  if (!supabase) return;
+  if (!SUPABASE_ENABLED) return;
   const { error } = await supabase.from('votes').delete().eq('poll_id', pollId);
   if (error) {
     throw new Error(error.message);
@@ -168,13 +202,17 @@ const buildPollLink = (id) => {
   return url.toString();
 };
 
+// -----------------------------------------------------------------------------
+// Admin (create/edit) view
+// -----------------------------------------------------------------------------
 const renderHome = async () => {
   viewContainer.innerHTML = '';
-  if (supabase && !isAdmin()) {
+  if (SUPABASE_ENABLED && !isAdmin()) {
     viewContainer.appendChild(authTemplate.content.cloneNode(true));
     const authForm = document.getElementById('auth-form');
     const authMessage = document.getElementById('auth-message');
     const signOutButton = document.getElementById('sign-out');
+    const authSubmit = document.getElementById('auth-submit');
     if (authUser && !adminAllowed) {
       authMessage.textContent = `Signed in as ${authUser.email}. You are not on the admin allowlist.`;
       if (signOutButton) {
@@ -190,6 +228,7 @@ const renderHome = async () => {
       const email = formData.get('email').trim();
       if (!email) return;
       try {
+        setButtonLoading(authSubmit, { idle: 'Send magic link', loading: 'Sending…' }, true);
         await supabase.auth.signInWithOtp({
           email,
           options: { emailRedirectTo: getRedirectUrl() },
@@ -198,6 +237,8 @@ const renderHome = async () => {
         authForm.reset();
       } catch (error) {
         alert(`Failed to send magic link: ${error.message}`);
+      } finally {
+        setButtonLoading(authSubmit, { idle: 'Send magic link', loading: 'Sending…' }, false);
       }
     });
     return;
@@ -289,7 +330,7 @@ const renderHome = async () => {
   if (adminEmail) {
     adminEmail.textContent = authUser?.email || 'Signed in';
   }
-  if (signOutButton && supabase) {
+  if (signOutButton && SUPABASE_ENABLED) {
     signOutButton.addEventListener('click', async () => {
       await supabase.auth.signOut();
     });
@@ -297,6 +338,8 @@ const renderHome = async () => {
 
   pollForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const submitLabel = editingPollId ? 'Save changes' : 'Create poll';
+    setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, true);
     const formData = new FormData(pollForm);
     const title = formData.get('title').trim();
     const description = formData.get('description').trim();
@@ -324,11 +367,13 @@ const renderHome = async () => {
 
     if (!title || questions.length === 0 || questions.some((q) => !q.prompt || !q.variable)) {
       alert('Please fill in all question prompts and variable names.');
+      setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, false);
       return;
     }
 
     if (questions.some((q) => q.options.length < 2)) {
       alert('Each question needs at least two options.');
+      setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, false);
       return;
     }
 
@@ -340,6 +385,7 @@ const renderHome = async () => {
         return;
       }
       if (!confirm('Editing will reset existing votes. Continue?')) {
+        setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, false);
         return;
       }
 
@@ -353,13 +399,15 @@ const renderHome = async () => {
       };
       try {
         await upsertPoll(updated);
-        if (supabase) await clearVotes(updated.id);
+        if (SUPABASE_ENABLED) await clearVotes(updated.id);
         renderPollList(pollList, startEdit);
         resetFormToCreate();
         alert('Poll updated. Existing votes were reset.');
         return;
       } catch (error) {
         alert(`Failed to update poll: ${error.message}`);
+      } finally {
+        setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, false);
         return;
       }
     }
@@ -382,6 +430,8 @@ const renderHome = async () => {
       alert('Poll created. Copy the share link from the list.');
     } catch (error) {
       alert(`Failed to create poll: ${error.message}`);
+    } finally {
+      setButtonLoading(submitButton, { idle: submitLabel, loading: 'Saving…' }, false);
     }
   });
 
@@ -389,6 +439,9 @@ const renderHome = async () => {
   await renderArchive(archiveList);
 };
 
+// -----------------------------------------------------------------------------
+// Admin list + archive
+// -----------------------------------------------------------------------------
 const summarizePoll = (poll) => {
   const typeLabel =
     poll.type === 'ranking' ? 'Ranking' : poll.type === 'favorite' ? 'Pick favorite' : 'Select one';
@@ -414,7 +467,11 @@ const renderPollList = async (container, onEdit = null) => {
 
     const link = buildPollLink(poll.id);
     root.querySelector('.copy-link').addEventListener('click', async () => {
-      await navigator.clipboard.writeText(link);
+      const copied = await copyToClipboard(link);
+      if (!copied) {
+        window.prompt('Copy this link', link);
+        return;
+      }
       alert('Poll link copied to clipboard.');
     });
 
@@ -469,6 +526,9 @@ const renderArchive = async (container) => {
   });
 };
 
+// -----------------------------------------------------------------------------
+// Result rendering helpers
+// -----------------------------------------------------------------------------
 const buildResultsMarkup = (poll, votes = []) => {
   if (!votes || votes.length === 0) {
     return '<p>No votes yet.</p>';
@@ -559,18 +619,24 @@ const buildAggregateMarkup = (poll, aggregate) => {
     return '<p>No votes yet.</p>';
   }
   const fragments = aggregate.questions.map((question) => {
+    const isRanking = aggregate.type === 'ranking';
     const totalVotes = question.total || 1;
+    const maxScore = isRanking
+      ? Math.max(1, ...question.options.map((option) => option.score || 0))
+      : totalVotes;
     return `
       <div class="mt-3">
         <p class="font-semibold text-white">${question.prompt}</p>
         ${question.options
           .map((option) => {
-            const percent = Math.round((option.count / totalVotes) * 100);
+            const value = isRanking ? option.score || 0 : option.count || 0;
+            const percent = Math.round((value / (isRanking ? maxScore : totalVotes)) * 100);
+            const suffix = isRanking ? ' pts' : ` (${percent}%)`;
             return `
               <div class="mt-1">
                 <div class="flex items-center justify-between">
                   <span>${option.label}</span>
-                  <span class="text-cyan-200">${option.count} (${percent}%)</span>
+                  <span class="text-cyan-200">${value}${suffix}</span>
                 </div>
                 <div class="mt-1 h-1.5 rounded-full bg-slate-800">
                   <div class="h-1.5 rounded-full bg-cyan-500" style="width: ${percent}%"></div>
@@ -583,6 +649,53 @@ const buildAggregateMarkup = (poll, aggregate) => {
     `;
   });
   return fragments.join('');
+};
+
+const buildAggregateFromVotes = (poll, votes) => {
+  const questions = (poll.questions || []).map((question) => {
+    const total = votes.length;
+    if (poll.type === 'ranking') {
+      const scores = {};
+      question.options.forEach((option) => (scores[option] = 0));
+      votes.forEach((vote) => {
+        const ranking = vote.answers[question.id];
+        if (!Array.isArray(ranking)) return;
+        const weight = ranking.length;
+        ranking.forEach((option, index) => {
+          scores[option] += weight - index;
+        });
+      });
+      return {
+        id: question.id,
+        prompt: question.prompt,
+        total,
+        options: Object.entries(scores).map(([label, score]) => ({ label, score })),
+      };
+    }
+
+    const counts = {};
+    question.options.forEach((option) => (counts[option] = 0));
+    let freeTextCount = 0;
+    votes.forEach((vote) => {
+      const choice = vote.answers[question.id];
+      if (choice && typeof choice === 'object' && choice.type === 'free') {
+        freeTextCount += 1;
+        return;
+      }
+      if (counts[choice] !== undefined) counts[choice] += 1;
+    });
+    if (question.allowFreeText && freeTextCount > 0) {
+      counts[question.freeTextLabel || 'Other'] = freeTextCount;
+    }
+    return {
+      id: question.id,
+      prompt: question.prompt,
+      total,
+      options: Object.entries(counts).map(([label, count]) => ({ label, count })),
+    };
+  });
+
+  return { type: poll.type, questions };
 };
 
 const finalizePoll = async (pollId) => {
@@ -653,6 +766,9 @@ const finalizePoll = async (pollId) => {
     .eq('id', pollId);
 };
 
+// -----------------------------------------------------------------------------
+// Vote view
+// -----------------------------------------------------------------------------
 const renderVote = async (pollId) => {
   const poll = await getPollById(pollId);
 
@@ -825,6 +941,7 @@ const renderVote = async (pollId) => {
     toggleResults.addEventListener('click', async () => {
       publicResults.classList.toggle('hidden');
       if (!publicResults.classList.contains('hidden')) {
+        publicResults.innerHTML = '<p>Loading results…</p>';
         const aggregate = await fetchPollResults(poll.id);
         publicResults.innerHTML = buildAggregateMarkup(poll, aggregate);
       }
@@ -832,6 +949,7 @@ const renderVote = async (pollId) => {
   }
 
   submitButton.addEventListener('click', async () => {
+    setButtonLoading(submitButton, { idle: 'Submit vote', loading: 'Submitting…' }, true);
     if (poll.type === 'ranking') {
       const invalid = poll.questions.some((question) => {
         const answers = responseState[question.id];
@@ -839,6 +957,7 @@ const renderVote = async (pollId) => {
       });
       if (invalid) {
         alert('Please rank every option before submitting.');
+        setButtonLoading(submitButton, { idle: 'Submit vote', loading: 'Submitting…' }, false);
         return;
       }
     } else {
@@ -849,6 +968,7 @@ const renderVote = async (pollId) => {
             ? 'Please select one favorite for each question.'
             : 'Please select one answer for each question.';
         alert(message);
+        setButtonLoading(submitButton, { idle: 'Submit vote', loading: 'Submitting…' }, false);
         return;
       }
       const emptyFreeText = poll.questions.some((question) => {
@@ -857,6 +977,7 @@ const renderVote = async (pollId) => {
       });
       if (emptyFreeText) {
         alert('Please type your free text answer before submitting.');
+        setButtonLoading(submitButton, { idle: 'Submit vote', loading: 'Submitting…' }, false);
         return;
       }
     }
@@ -864,6 +985,7 @@ const renderVote = async (pollId) => {
     try {
       await createVote(poll.id, responseState);
       if (publicResults && !publicResults.classList.contains('hidden')) {
+        publicResults.innerHTML = '<p>Loading results…</p>';
         const aggregate = await fetchPollResults(poll.id);
         publicResults.innerHTML = buildAggregateMarkup(poll, aggregate);
       }
@@ -871,10 +993,15 @@ const renderVote = async (pollId) => {
       window.location.href = './index.html';
     } catch (error) {
       alert(`Failed to submit vote: ${error.message}`);
+    } finally {
+      setButtonLoading(submitButton, { idle: 'Submit vote', loading: 'Submitting…' }, false);
     }
   });
 };
 
+// -----------------------------------------------------------------------------
+// Boot
+// -----------------------------------------------------------------------------
 const init = async () => {
   if (supabase) {
     const { data } = await supabase.auth.getSession();
